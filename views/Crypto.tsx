@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { CryptoTransaction, Wallet, AssetPrice, CryptoTxType } from '../types';
 import { calculateCryptoHoldings, formatCurrency, formatCrypto } from '../utils';
-import { RefreshCw, Plus, Trash2, TrendingUp, Bitcoin, Wallet as WalletIcon, ArrowRightLeft, Layers } from 'lucide-react';
+import { RefreshCw, Plus, Trash2, TrendingUp, Bitcoin, Wallet as WalletIcon, Layers } from 'lucide-react';
 
 interface CryptoProps {
     wallets: Wallet[];
@@ -14,48 +14,53 @@ interface CryptoProps {
     onDeleteTransaction: (id: number) => void;
 }
 
-export const Crypto: React.FC<CryptoProps> = ({ 
+const INITIAL_WALLET_FORM = { name: '', address: '', chain: 'ethereum' as const };
+const INITIAL_TX_FORM = {
+    walletId: '',
+    type: 'buy' as CryptoTxType,
+    asset: '',
+    quantity: '',
+    price: '',
+    fee: '',
+    date: new Date().toISOString().slice(0, 16),
+};
+
+const BASE_PRICES: Record<string, number> = {
+    BTC: 65000, ETH: 3500, SOL: 145, ADA: 0.45, DOT: 7.50
+};
+
+const CHAIN_OPTIONS = ['ethereum', 'bitcoin', 'solana'] as const;
+const TX_TYPE_OPTIONS: CryptoTxType[] = ['buy', 'sell', 'transfer'];
+const MAX_WALLETS = 3;
+const PRICE_FETCH_DELAY = 800;
+
+const INPUT_CLASSES = "w-full bg-white dark:bg-dark-muted border border-gray-200 dark:border-dark-border rounded-lg p-2.5 text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all text-sm placeholder:text-gray-400 dark:placeholder:text-gray-600";
+const LABEL_CLASSES = "block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5";
+
+function Crypto({ 
     wallets, 
     transactions, 
     onAddWallet, 
     onRemoveWallet,
     onAddTransaction,
     onDeleteTransaction 
-}) => {
+}: CryptoProps) {
     const [prices, setPrices] = useState<AssetPrice>({});
     const [loading, setLoading] = useState(false);
-    
-    // Wallet Form State
-    const [walletForm, setWalletForm] = useState({ name: '', address: '', chain: 'ethereum' });
+    const [walletForm, setWalletForm] = useState(INITIAL_WALLET_FORM);
+    const [txForm, setTxForm] = useState(INITIAL_TX_FORM);
 
-    // Transaction Form State
-    const [txForm, setTxForm] = useState({
-        walletId: '',
-        type: 'buy' as CryptoTxType,
-        asset: '',
-        quantity: '',
-        price: '',
-        fee: '',
-        date: new Date().toISOString().slice(0, 16),
-    });
-
-    const fetchPrices = async () => {
+    const fetchPrices = useCallback(async () => {
         setLoading(true);
-        // Simulate API call
-        await new Promise(resolve => setTimeout(resolve, 800));
+        await new Promise(resolve => setTimeout(resolve, PRICE_FETCH_DELAY));
         
         const assets = [...new Set(transactions.map(t => t.asset.toUpperCase()))];
         const newPrices: AssetPrice = {};
-        
-        const basePrices: Record<string, number> = {
-            BTC: 65000, ETH: 3500, SOL: 145, ADA: 0.45, DOT: 7.50
-        };
 
         assets.forEach(asset => {
-            const assetKey = asset as string;
-            const base = basePrices[assetKey] || 100;
+            const base = BASE_PRICES[asset] || 100;
             const randomChange = (Math.random() - 0.5) * 0.1;
-            newPrices[assetKey] = {
+            newPrices[asset] = {
                 usd: base * (1 + randomChange),
                 usd_24h_change: randomChange * 100
             };
@@ -63,20 +68,21 @@ export const Crypto: React.FC<CryptoProps> = ({
 
         setPrices(newPrices);
         setLoading(false);
-    };
+    }, [transactions]);
 
     useEffect(() => {
-        if (transactions.length > 0) fetchPrices();
-         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [transactions.length]);
+        if (transactions.length > 0) {
+            fetchPrices();
+        }
+    }, [transactions, fetchPrices]);
 
-    const handleAddWallet = (e: React.FormEvent) => {
+    const handleAddWallet = useCallback((e: React.FormEvent) => {
         e.preventDefault();
         onAddWallet(walletForm);
-        setWalletForm({ name: '', address: '', chain: 'ethereum' });
-    };
+        setWalletForm(INITIAL_WALLET_FORM);
+    }, [walletForm, onAddWallet]);
 
-    const handleAddTx = (e: React.FormEvent) => {
+    const handleAddTx = useCallback((e: React.FormEvent) => {
         e.preventDefault();
         onAddTransaction({
             walletId: parseInt(txForm.walletId),
@@ -87,31 +93,37 @@ export const Crypto: React.FC<CryptoProps> = ({
             fee: parseFloat(txForm.fee) || 0,
             date: txForm.date
         });
-        setTxForm({ ...txForm, quantity: '', price: '', fee: '' });
-    };
+        setTxForm({ ...INITIAL_TX_FORM, date: txForm.date });
+    }, [txForm, onAddTransaction]);
 
-    const holdings = calculateCryptoHoldings(transactions);
-    const assetList = Object.keys(holdings);
+    const holdings = useMemo(() => calculateCryptoHoldings(transactions), [transactions]);
+    const assetList = useMemo(() => Object.keys(holdings), [holdings]);
 
-    const totalValue = assetList.reduce((sum, asset) => {
-        const qty = holdings[asset].quantity;
-        const price = prices[asset]?.usd || 0;
-        return sum + (qty * price);
-    }, 0);
+    const { totalValue, totalCostBasis, totalUnrealizedPnL, pnlPercent } = useMemo(() => {
+        const total = assetList.reduce((sum, asset) => {
+            const qty = holdings[asset].quantity;
+            const price = prices[asset]?.usd || 0;
+            return sum + (qty * price);
+        }, 0);
 
-    const totalCostBasis = assetList.reduce((sum, asset) => sum + holdings[asset].costBasis, 0);
-    const totalUnrealizedPnL = totalValue - totalCostBasis;
-    const pnlPercent = totalCostBasis > 0 ? (totalUnrealizedPnL / totalCostBasis) * 100 : 0;
+        const costBasis = assetList.reduce((sum, asset) => sum + holdings[asset].costBasis, 0);
+        const unrealizedPnL = total - costBasis;
+        const pnlPct = costBasis > 0 ? (unrealizedPnL / costBasis) * 100 : 0;
 
-    const inputClasses = "w-full bg-white dark:bg-dark-muted border border-gray-200 dark:border-dark-border rounded-lg p-2.5 text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all text-sm placeholder:text-gray-400 dark:placeholder:text-gray-600";
-    const labelClasses = "block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5";
+        return {
+            totalValue: total,
+            totalCostBasis: costBasis,
+            totalUnrealizedPnL: unrealizedPnL,
+            pnlPercent: pnlPct
+        };
+    }, [assetList, holdings, prices]);
 
     return (
         <div className="space-y-8 animate-fade-in">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
                     <h2 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                         Crypto Assets
+                        Crypto Assets
                     </h2>
                     <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">Manage wallets, track assets, and monitor performance</p>
                 </div>
@@ -190,15 +202,15 @@ export const Crypto: React.FC<CryptoProps> = ({
                             ))}
                         </div>
                         
-                        {wallets.length < 3 && (
+                        {wallets.length < MAX_WALLETS && (
                             <form onSubmit={handleAddWallet} className="space-y-3 pt-4 border-t border-gray-100 dark:border-dark-border">
                                 <h4 className="text-xs font-bold uppercase text-gray-500 dark:text-gray-400 tracking-wider">Connect New Wallet</h4>
-                                <input placeholder="Label (e.g. Ledger)" required className={inputClasses} value={walletForm.name} onChange={e => setWalletForm({...walletForm, name: e.target.value})} />
-                                <input placeholder="Address" required className={inputClasses} value={walletForm.address} onChange={e => setWalletForm({...walletForm, address: e.target.value})} />
-                                <select className={inputClasses} value={walletForm.chain} onChange={e => setWalletForm({...walletForm, chain: e.target.value})}>
-                                    <option value="ethereum">Ethereum</option>
-                                    <option value="bitcoin">Bitcoin</option>
-                                    <option value="solana">Solana</option>
+                                <input placeholder="Label (e.g. Ledger)" required className={INPUT_CLASSES} value={walletForm.name} onChange={e => setWalletForm({...walletForm, name: e.target.value})} />
+                                <input placeholder="Address" required className={INPUT_CLASSES} value={walletForm.address} onChange={e => setWalletForm({...walletForm, address: e.target.value})} />
+                                <select className={INPUT_CLASSES} value={walletForm.chain} onChange={e => setWalletForm({...walletForm, chain: e.target.value})}>
+                                    {CHAIN_OPTIONS.map(chain => (
+                                        <option key={chain} value={chain}>{chain.charAt(0).toUpperCase() + chain.slice(1)}</option>
+                                    ))}
                                 </select>
                                 <Button type="submit" size="sm" className="w-full mt-2 flex items-center justify-center gap-2">
                                     <Plus className="w-3 h-3" /> Add Wallet
@@ -215,8 +227,8 @@ export const Crypto: React.FC<CryptoProps> = ({
                         ) : (
                             <form onSubmit={handleAddTx} className="space-y-4">
                                 <div>
-                                    <label className={labelClasses}>Wallet</label>
-                                    <select required className={inputClasses} value={txForm.walletId} onChange={e => setTxForm({...txForm, walletId: e.target.value})}>
+                                    <label className={LABEL_CLASSES}>Wallet</label>
+                                    <select required className={INPUT_CLASSES} value={txForm.walletId} onChange={e => setTxForm({...txForm, walletId: e.target.value})}>
                                         <option value="">Select Wallet</option>
                                         {wallets.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
                                     </select>
@@ -224,38 +236,38 @@ export const Crypto: React.FC<CryptoProps> = ({
                                 
                                 <div className="grid grid-cols-2 gap-3">
                                     <div>
-                                        <label className={labelClasses}>Action</label>
-                                        <select className={inputClasses} value={txForm.type} onChange={e => setTxForm({...txForm, type: e.target.value as CryptoTxType})}>
-                                            <option value="buy">Buy</option>
-                                            <option value="sell">Sell</option>
-                                            <option value="transfer">Transfer</option>
+                                        <label className={LABEL_CLASSES}>Action</label>
+                                        <select className={INPUT_CLASSES} value={txForm.type} onChange={e => setTxForm({...txForm, type: e.target.value as CryptoTxType})}>
+                                            {TX_TYPE_OPTIONS.map(type => (
+                                                <option key={type} value={type}>{type.charAt(0).toUpperCase() + type.slice(1)}</option>
+                                            ))}
                                         </select>
                                     </div>
                                     <div>
-                                        <label className={labelClasses}>Asset</label>
-                                        <input placeholder="BTC" required className={inputClasses} value={txForm.asset} onChange={e => setTxForm({...txForm, asset: e.target.value})} />
+                                        <label className={LABEL_CLASSES}>Asset</label>
+                                        <input placeholder="BTC" required className={INPUT_CLASSES} value={txForm.asset} onChange={e => setTxForm({...txForm, asset: e.target.value})} />
                                     </div>
                                 </div>
 
                                 <div className="grid grid-cols-2 gap-3">
                                     <div>
-                                        <label className={labelClasses}>Quantity</label>
-                                        <input type="number" step="any" placeholder="0.00" required className={inputClasses} value={txForm.quantity} onChange={e => setTxForm({...txForm, quantity: e.target.value})} />
+                                        <label className={LABEL_CLASSES}>Quantity</label>
+                                        <input type="number" step="any" placeholder="0.00" required className={INPUT_CLASSES} value={txForm.quantity} onChange={e => setTxForm({...txForm, quantity: e.target.value})} />
                                     </div>
                                     <div>
-                                        <label className={labelClasses}>Price / Unit ($)</label>
-                                        <input type="number" step="any" placeholder="0.00" required className={inputClasses} value={txForm.price} onChange={e => setTxForm({...txForm, price: e.target.value})} />
+                                        <label className={LABEL_CLASSES}>Price / Unit ($)</label>
+                                        <input type="number" step="any" placeholder="0.00" required className={INPUT_CLASSES} value={txForm.price} onChange={e => setTxForm({...txForm, price: e.target.value})} />
                                     </div>
                                 </div>
                                 
                                 <div className="grid grid-cols-2 gap-3">
                                     <div>
-                                        <label className={labelClasses}>Fee ($)</label>
-                                        <input type="number" step="any" placeholder="0.00" className={inputClasses} value={txForm.fee} onChange={e => setTxForm({...txForm, fee: e.target.value})} />
+                                        <label className={LABEL_CLASSES}>Fee ($)</label>
+                                        <input type="number" step="any" placeholder="0.00" className={INPUT_CLASSES} value={txForm.fee} onChange={e => setTxForm({...txForm, fee: e.target.value})} />
                                     </div>
                                     <div>
-                                        <label className={labelClasses}>Date</label>
-                                        <input type="datetime-local" required className={inputClasses} value={txForm.date} onChange={e => setTxForm({...txForm, date: e.target.value})} />
+                                        <label className={LABEL_CLASSES}>Date</label>
+                                        <input type="datetime-local" required className={INPUT_CLASSES} value={txForm.date} onChange={e => setTxForm({...txForm, date: e.target.value})} />
                                     </div>
                                 </div>
 
@@ -370,4 +382,6 @@ export const Crypto: React.FC<CryptoProps> = ({
             </div>
         </div>
     );
-};
+}
+
+export { Crypto };

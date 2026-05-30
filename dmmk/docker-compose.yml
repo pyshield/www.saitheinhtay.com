@@ -1,0 +1,127 @@
+name: dmmk-pay
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootsecret}
+      MYSQL_DATABASE: ${DB_NAME:-dmmk_pay}
+      MYSQL_USER: ${DB_USER:-dmmk}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-changeme}
+    ports:
+      - "${MYSQL_HOST_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./database/seed-demo.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "127.0.0.1",
+          "-u",
+          "root",
+          "-p${MYSQL_ROOT_PASSWORD:-rootsecret}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  chain:
+    profiles: [blockchain]
+    build:
+      context: ./contracts
+      dockerfile: Dockerfile
+    command: ["npx", "hardhat", "node", "--hostname", "0.0.0.0"]
+    ports:
+      - "${CHAIN_HOST_PORT:-8545}:8545"
+    volumes:
+      - deployments:/app/deployments
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8545',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',method:'eth_chainId',params:[],id:1})}).then(r=>r.json()).then(j=>process.exit(j.result?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 3s
+      timeout: 5s
+      retries: 25
+      start_period: 15s
+
+  deployer:
+    profiles: [blockchain]
+    build:
+      context: ./contracts
+      dockerfile: Dockerfile
+    command: ["sh", "/app/docker/deploy-and-exit.sh"]
+    environment:
+      DEPLOY_MOCK_TOKEN: "true"
+      CHAIN_RPC_URL: http://chain:8545
+    volumes:
+      - deployments:/app/deployments
+    depends_on:
+      chain:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${DB_USER:-dmmk}
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+      DB_NAME: ${DB_NAME:-dmmk_pay}
+      DB_CONNECTION_LIMIT: 10
+      SKIP_BLOCKCHAIN: ${SKIP_BLOCKCHAIN:-true}
+      RPC_URL: ${RPC_URL:-http://chain:8545}
+      ROUTER_CONTRACT_ADDRESS: ${ROUTER_CONTRACT_ADDRESS:-}
+      DMMK_TOKEN_ADDRESS: ${DMMK_TOKEN_ADDRESS:-}
+      DMMK_DECIMALS: ${DMMK_DECIMALS:-18}
+      AGENT_MAX_ACTIVE_CASHOUTS: ${AGENT_MAX_ACTIVE_CASHOUTS:-5}
+      DEPLOYMENTS_FILE: /deployments/localhost.json
+    ports:
+      - "${BACKEND_HOST_PORT:-3000}:3000"
+    volumes:
+      - deployments:/deployments:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      deployer:
+        condition: service_completed_successfully
+        required: false
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_MERCHANT_ID: ${VITE_MERCHANT_ID:-1}
+        VITE_AGENT_ID: ${VITE_AGENT_ID:-2}
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_HOST_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
+  deployments:
