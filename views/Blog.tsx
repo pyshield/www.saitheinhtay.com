@@ -1,86 +1,246 @@
-import React from 'react';
-import { Button } from '../components/ui/Button';
-import { Calendar, Clock, ArrowRight, Bookmark } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Calendar, Clock, ArrowRight, Bookmark, ExternalLink, X } from 'lucide-react';
+
+type SiteContentItem = {
+    title: string;
+    category: string;
+    url: string;
+    filename: string;
+    sizeBytes: number;
+    updatedAt: string;
+};
+
+type SiteContentManifest = {
+    generatedAt: string;
+    items: SiteContentItem[];
+};
+
+type BlogPost = {
+    id: string;
+    title: string;
+    excerpt: string;
+    date: string;
+    readTime: string;
+    category: string;
+    image: string;
+    url: string;
+    index: number;
+};
+
+const contentImage = 'https://images.unsplash.com/photo-1499750310107-5fef28a66643?auto=format&fit=crop&q=80&w=800';
+
+const formatDate = (value: string) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'Local content';
+    return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+};
+
+const formatSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+};
+
+const escapeHtml = (value: string) =>
+    value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+
+const markdownToHtml = (markdown: string) => {
+    const lines = markdown.split(/\r?\n/);
+    const html: string[] = [];
+    let inList = false;
+
+    const closeList = () => {
+        if (inList) {
+            html.push('</ul>');
+            inList = false;
+        }
+    };
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) {
+            closeList();
+            continue;
+        }
+
+        if (line.startsWith('### ')) {
+            closeList();
+            html.push(`<h3>${escapeHtml(line.slice(4))}</h3>`);
+        } else if (line.startsWith('## ')) {
+            closeList();
+            html.push(`<h2>${escapeHtml(line.slice(3))}</h2>`);
+        } else if (line.startsWith('# ')) {
+            closeList();
+            html.push(`<h1>${escapeHtml(line.slice(2))}</h1>`);
+        } else if (line.startsWith('- ') || line.startsWith('* ')) {
+            if (!inList) {
+                html.push('<ul>');
+                inList = true;
+            }
+            html.push(`<li>${escapeHtml(line.slice(2))}</li>`);
+        } else {
+            closeList();
+            html.push(`<p>${escapeHtml(line)}</p>`);
+        }
+    }
+
+    closeList();
+    return html.join('\n');
+};
 
 export const Blog: React.FC = () => {
-    const posts = [
-        {
-            id: 1,
-            title: "The Future of Decentralized Finance",
-            excerpt: "Exploring how DeFi is reshaping the global financial landscape and what it means for traditional banking systems.",
-            date: "Oct 15, 2025",
-            readTime: "5 min read",
-            category: "Crypto",
-            image: "https://images.unsplash.com/photo-1639762681485-074b7f938ba0?auto=format&fit=crop&q=80&w=800"
-        },
-        {
-            id: 2,
-            title: "Mastering React Performance",
-            excerpt: "Deep dive into optimization techniques, from memoization to virtualization, for building lightning-fast web apps.",
-            date: "Sep 28, 2025",
-            readTime: "8 min read",
-            category: "Development",
-            image: "https://images.unsplash.com/photo-1633356122544-f134324a6cee?auto=format&fit=crop&q=80&w=800"
-        },
-        {
-            id: 3,
-            title: "Personal Finance 101: The 50/30/20 Rule",
-            excerpt: "A simple yet effective budgeting framework to manage your income, savings, and spending habits efficiently.",
-            date: "Sep 10, 2025",
-            readTime: "4 min read",
-            category: "Finance",
-            image: "https://images.unsplash.com/photo-1579621970563-ebec7560ff3e?auto=format&fit=crop&q=80&w=800"
-        },
-        {
-            id: 4,
-            title: "Building Scalable APIs with Node.js",
-            excerpt: "Best practices for structuring your backend, handling errors, and ensuring security in modern Node.js applications.",
-            date: "Aug 22, 2025",
-            readTime: "6 min read",
-            category: "Backend",
-            image: "https://images.unsplash.com/photo-1627398242454-45a1465c2479?auto=format&fit=crop&q=80&w=800"
-        },
-        {
-            id: 5,
-            title: "Understanding Crypto Market Cycles",
-            excerpt: "How to identify bull and bear markets, and strategies for investing during volatile periods.",
-            date: "Aug 05, 2025",
-            readTime: "7 min read",
-            category: "Investing",
-            image: "https://images.unsplash.com/photo-1611974765270-ca12586343bb?auto=format&fit=crop&q=80&w=800"
-        },
-        {
-            id: 6,
-            title: "The Art of Minimalist UI Design",
-            excerpt: "Why less is often more when it comes to user interface design, and how to achieve clarity in your projects.",
-            date: "Jul 18, 2025",
-            readTime: "4 min read",
-            category: "Design",
-            image: "https://images.unsplash.com/photo-1561070791-2526d30994b5?auto=format&fit=crop&q=80&w=800"
+    const [contentItems, setContentItems] = useState<SiteContentItem[]>([]);
+    const [selectedPost, setSelectedPost] = useState<BlogPost | null>(null);
+    const [readerHtml, setReaderHtml] = useState('');
+    const [readerLoading, setReaderLoading] = useState(false);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        fetch('/content/site-content.json', { cache: 'no-store' })
+            .then((response) => response.ok ? response.json() : Promise.reject(new Error('No local content manifest')))
+            .then((manifest: SiteContentManifest) => {
+                if (!cancelled) setContentItems(manifest.items ?? []);
+            })
+            .catch(() => {
+                if (!cancelled) setContentItems([]);
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!selectedPost || selectedPost.url === '#') {
+            setReaderHtml('');
+            return;
         }
-    ];
+
+        const lowerUrl = selectedPost.url.toLowerCase();
+        if (lowerUrl.endsWith('.html') || lowerUrl.endsWith('.htm')) {
+            setReaderHtml('');
+            return;
+        }
+
+        let cancelled = false;
+        setReaderLoading(true);
+
+        fetch(selectedPost.url, { cache: 'no-store' })
+            .then((response) => response.ok ? response.text() : Promise.reject(new Error('Unable to load file')))
+            .then((text) => {
+                if (!cancelled) setReaderHtml(markdownToHtml(text));
+            })
+            .catch(() => {
+                if (!cancelled) setReaderHtml('<p>Unable to load this file in the reader.</p>');
+            })
+            .finally(() => {
+                if (!cancelled) setReaderLoading(false);
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [selectedPost]);
+
+    const posts: BlogPost[] = contentItems.map((item, index) => ({
+        id: `local-${item.url}`,
+        title: item.title,
+        excerpt: `${item.filename} generated by autocontent. File size: ${formatSize(item.sizeBytes)}.`,
+        date: formatDate(item.updatedAt),
+        readTime: item.category,
+        category: item.category,
+        image: contentImage,
+        url: item.url,
+        index,
+    }));
+
+    if (selectedPost) {
+        const lowerUrl = selectedPost.url.toLowerCase();
+        const isHtml = lowerUrl.endsWith('.html') || lowerUrl.endsWith('.htm');
+
+        return (
+            <div className="pb-12 animate-[fadeIn_0.5s_ease-out_forwards]">
+                <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                    <div>
+                        <button
+                            onClick={() => setSelectedPost(null)}
+                            className="inline-flex items-center gap-2 text-sm font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 mb-4"
+                        >
+                            <X className="w-4 h-4" /> Close Reader
+                        </button>
+                        <div className="flex items-center gap-3 text-xs font-semibold uppercase tracking-wider text-indigo-500 mb-3">
+                            <span>{selectedPost.category}</span>
+                            <span className="h-1 w-1 rounded-full bg-gray-300"></span>
+                            <span>{selectedPost.date}</span>
+                        </div>
+                        <h1 className="text-3xl md:text-5xl font-bold tracking-tight text-gray-900 dark:text-white max-w-4xl">
+                            {selectedPost.title}
+                        </h1>
+                    </div>
+                    <a
+                        href={selectedPost.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 dark:border-dark-border px-4 py-2 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:border-indigo-500 hover:text-indigo-500"
+                    >
+                        Raw File <ExternalLink className="w-4 h-4" />
+                    </a>
+                </div>
+
+                <div className="bg-white dark:bg-dark-card border border-gray-200 dark:border-dark-border rounded-xl overflow-hidden shadow-xl">
+                    {isHtml ? (
+                        <iframe
+                            src={selectedPost.url}
+                            title={selectedPost.title}
+                            className="w-full h-[78vh] bg-white"
+                        />
+                    ) : (
+                        <article
+                            className="max-w-4xl mx-auto px-6 py-10 md:px-10 md:py-14 text-gray-700 dark:text-gray-300 leading-8
+                            [&_h1]:text-3xl [&_h1]:font-bold [&_h1]:text-gray-900 [&_h1]:dark:text-white [&_h1]:mb-6
+                            [&_h2]:text-2xl [&_h2]:font-bold [&_h2]:text-gray-900 [&_h2]:dark:text-white [&_h2]:mt-10 [&_h2]:mb-4
+                            [&_h3]:text-xl [&_h3]:font-semibold [&_h3]:text-gray-900 [&_h3]:dark:text-white [&_h3]:mt-8 [&_h3]:mb-3
+                            [&_p]:mb-5 [&_ul]:mb-6 [&_ul]:list-disc [&_ul]:pl-6 [&_li]:mb-2"
+                            dangerouslySetInnerHTML={{ __html: readerLoading ? '<p>Loading article...</p>' : readerHtml }}
+                        />
+                    )}
+                </div>
+
+                <style>{`
+                    @keyframes fadeIn {
+                        from { opacity: 0; transform: translateY(20px); }
+                        to { opacity: 1; transform: translateY(0); }
+                    }
+                `}</style>
+            </div>
+        );
+    }
 
     return (
         <div className="space-y-12 pb-12 animate-[fadeIn_0.5s_ease-out_forwards]">
-            {/* Hero Section */}
             <div className="text-center max-w-2xl mx-auto space-y-4 pt-8">
                 <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-gray-900 dark:text-white">
-                    Thoughts & <span className="text-indigo-500">Insights</span>
+                    Published <span className="text-indigo-500">Content</span>
                 </h1>
                 <p className="text-lg text-gray-600 dark:text-gray-400">
-                    Writing about technology, finance, and the intersection of both.
+                    Articles and files generated by autocontent, presented inside your website.
                 </p>
             </div>
 
-            {/* Featured Tags (Optional) */}
             <div className="flex flex-wrap justify-center gap-2">
-                {['All', 'Development', 'Crypto', 'Finance', 'Design'].map((tag, i) => (
-                    <button 
+                {['All', 'Article', 'Markdown', 'Video', 'Audio', 'Image', 'PDF'].map((tag, i) => (
+                    <button
                         key={tag}
                         className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${
-                            i === 0 
-                            ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/25' 
-                            : 'bg-white dark:bg-dark-card border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-300 hover:border-indigo-500 hover:text-indigo-500'
+                            i === 0
+                                ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/25'
+                                : 'bg-white dark:bg-dark-card border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-300 hover:border-indigo-500 hover:text-indigo-500'
                         }`}
                     >
                         {tag}
@@ -88,18 +248,17 @@ export const Blog: React.FC = () => {
                 ))}
             </div>
 
-            {/* Post Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-                {posts.map((post, index) => (
-                    <div 
-                        key={post.id} 
+                {posts.map((post) => (
+                    <div
+                        key={post.id}
                         className="group bg-white dark:bg-dark-card rounded-2xl overflow-hidden border border-gray-200 dark:border-dark-border hover:shadow-xl hover:border-indigo-500/30 transition-all duration-300 flex flex-col h-full opacity-0 animate-[fadeIn_0.5s_ease-out_forwards]"
-                        style={{ animationDelay: `${index * 100}ms` }}
+                        style={{ animationDelay: `${post.index * 100}ms` }}
                     >
                         <div className="relative h-52 overflow-hidden">
-                            <img 
-                                src={post.image} 
-                                alt={post.title} 
+                            <img
+                                src={post.image}
+                                alt={post.title}
                                 className="w-full h-full object-cover transform group-hover:scale-105 transition-transform duration-500"
                             />
                             <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-60"></div>
@@ -119,10 +278,13 @@ export const Blog: React.FC = () => {
                                 {post.excerpt}
                             </p>
                             <div className="flex items-center justify-between mt-auto pt-4 border-t border-gray-100 dark:border-dark-border">
-                                <a href="#" className="inline-flex items-center text-sm font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 transition-colors gap-1 group/link">
+                                <button
+                                    onClick={() => setSelectedPost(post)}
+                                    className="inline-flex items-center text-sm font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 transition-colors gap-1 group/link"
+                                >
                                     Read Article <ArrowRight className="w-4 h-4 transform group-hover/link:translate-x-1 transition-transform" />
-                                </a>
-                                <button className="text-gray-400 hover:text-indigo-500 transition-colors">
+                                </button>
+                                <button className="text-gray-400 hover:text-indigo-500 transition-colors" aria-label="Bookmark">
                                     <Bookmark className="w-4 h-4" />
                                 </button>
                             </div>
@@ -130,18 +292,13 @@ export const Blog: React.FC = () => {
                     </div>
                 ))}
             </div>
-            
-            {/* Newsletter / Archive CTA */}
-            <div className="bg-gradient-to-br from-gray-50 to-gray-100 dark:from-dark-card dark:to-dark-muted/30 rounded-2xl p-8 md:p-12 text-center border border-dashed border-gray-300 dark:border-dark-border">
-                <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Want to read more?</h3>
-                <p className="text-gray-600 dark:text-gray-400 mb-8 max-w-lg mx-auto">
-                    Check out my archive for older posts, tutorials, and deep dives into software architecture.
-                </p>
-                <div className="flex flex-col sm:flex-row justify-center gap-4">
-                    <Button variant="secondary" className="px-8">View Archive</Button>
-                    <Button variant="primary" className="px-8">Subscribe to Newsletter</Button>
+
+            {posts.length === 0 && (
+                <div className="text-center border border-dashed border-gray-300 dark:border-dark-border rounded-xl p-10">
+                    <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">No generated content yet</h3>
+                    <p className="text-gray-600 dark:text-gray-400">Publish from autocontent, then refresh this page.</p>
                 </div>
-            </div>
+            )}
 
             <style>{`
                 @keyframes fadeIn {
